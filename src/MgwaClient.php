@@ -103,13 +103,162 @@ class MgwaClient
      *
      * GET /api/v1/sessions/{session}/qr
      *
+     * إذا كان المحرك ما زال يقلع، تُعاد استجابة معلّقة بدل رمي استثناء.
+     *
      * @param string $session معرّف الجلسة
      * @return array مصفوفة تحتوي على سلسلة Base64 لرمز الـ QR (`qr_code`)
      * @throws MgwaException
      */
     public function getQrCode(string $session): array
     {
-        return $this->request('GET', "/api/v1/sessions/{$session}/qr");
+        try {
+            $res = $this->request('GET', "/api/v1/sessions/{$session}/qr");
+        } catch (MgwaException $e) {
+            if (! $this->isQrPending($e)) {
+                throw $e;
+            }
+
+            $res = array_merge([
+                'qr_code' => null,
+                'pending' => true,
+                'message' => $e->getMessage(),
+            ], $e->getResponseBody() ?? []);
+        }
+
+        $qr = static::qrFromResponse($res);
+        if ($qr) {
+            $res['qr_code'] = $qr;
+            $res['pending'] = false;
+        }
+
+        return $res;
+    }
+
+    /**
+     * استخراج رمز الـ QR من أي شكل استجابة تعيده بوابة MGWA
+     */
+    public static function qrFromResponse(?array $response): ?string
+    {
+        if (empty($response) || ! is_array($response)) {
+            return null;
+        }
+
+        $candidates = [
+            $response['qr_code'] ?? null,
+            $response['qrcode'] ?? null,
+            $response['qr'] ?? null,
+            $response['qrCode'] ?? null,
+            $response['qr_image'] ?? null,
+            $response['data']['qr_code'] ?? null,
+            $response['data']['qrcode'] ?? null,
+            $response['data']['qr'] ?? null,
+            $response['data']['qrCode'] ?? null,
+            $response['data']['qr_image'] ?? null,
+            $response['session']['qrcode'] ?? null,
+            $response['session']['qr'] ?? null,
+            $response['session']['qr_code'] ?? null,
+        ];
+
+        foreach ($candidates as $value) {
+            $qr = static::normalizeQrValue($value);
+            if ($qr) {
+                return $qr;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * انتظار ظهور رمز الـ QR بعد بدء المحرك (OpenWA يحتاج ثوانٍ بعد STARTING)
+     *
+     * @return array{qr_code: ?string, status: array, ready: bool, connected?: bool}
+     */
+    public function waitForQr(string $session, int $attempts = 15, int $delayMs = 800): array
+    {
+        $last = [];
+
+        for ($attempt = 0; $attempt < $attempts; $attempt++) {
+            if ($attempt > 0) {
+                usleep($delayMs * 1000);
+            }
+
+            try {
+                $status = $this->getSessionStatus($session);
+            } catch (MgwaException $e) {
+                $status = $e->getResponseBody() ?? [];
+            }
+
+            $last = is_array($status) ? $status : [];
+            $qr = static::qrFromResponse($last);
+
+            if (! $qr) {
+                try {
+                    $qrRes = $this->getQrCode($session);
+                    $last = $qrRes ?: $last;
+                    $qr = static::qrFromResponse($qrRes);
+                } catch (MgwaException $e) {
+                    if (! $this->isQrPending($e)) {
+                        throw $e;
+                    }
+                }
+            }
+
+            if ($qr) {
+                return [
+                    'qr_code' => $qr,
+                    'status' => $last,
+                    'ready' => true,
+                ];
+            }
+
+            if ($this->isConnectedPayload($last)) {
+                return [
+                    'qr_code' => null,
+                    'status' => $last,
+                    'ready' => true,
+                    'connected' => true,
+                ];
+            }
+        }
+
+        return [
+            'qr_code' => null,
+            'status' => $last,
+            'ready' => false,
+        ];
+    }
+
+    /**
+     * هل الجلسة متصلة أو تقلع أو تنتظر مسح QR ولا تحتاج إعادة start؟
+     */
+    public function sessionIsRunning(?array $session): bool
+    {
+        if (! is_array($session) || $session === []) {
+            return false;
+        }
+
+        $nested = is_array($session['data'] ?? null) ? $session['data'] : [];
+        $status = strtolower((string) (
+            $session['status']
+            ?? $session['state']
+            ?? $nested['status']
+            ?? $nested['state']
+            ?? ''
+        ));
+
+        return in_array($status, [
+            'connected',
+            'ready',
+            'authenticated',
+            'paired',
+            'qr_pending',
+            'starting',
+            'start',
+            'scan_qr',
+            'open',
+            'qr',
+        ], true);
     }
 
     /**
@@ -208,6 +357,89 @@ class MgwaClient
     }
 
     /**
+     * إنشاء جلسة واتساب جديدة وبدء تجهيز المحرك
+     *
+     * POST /api/v1/sessions
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function createSession(string $identifier, array $options = []): array
+    {
+        $payload = array_filter([
+            'session_identifier' => $identifier,
+            'name' => $options['name'] ?? $identifier,
+            'webhook_url' => $options['webhook_url'] ?? null,
+            'webhook_events' => $options['webhook_events'] ?? ['*'],
+            'webhook_secret' => $options['webhook_secret'] ?? null,
+            'start' => $options['start'] ?? true,
+        ], fn ($value) => $value !== null && $value !== '');
+
+        return $this->request('POST', '/api/v1/sessions', $payload);
+    }
+
+    /**
+     * البحث عن جلسة بالمعرّف أو المعرّف الرقمي دون إرجاع جلسة لشركة أخرى
+     */
+    public function findSession(string $identifier): ?array
+    {
+        $res = $this->getSessions();
+        $list = $res['data'] ?? (is_array($res) ? $res : []);
+
+        if (isset($list['data']) && is_array($list['data'])) {
+            $list = $list['data'];
+        }
+
+        foreach ($list as $session) {
+            if (! is_array($session)) {
+                continue;
+            }
+
+            if (
+                (string) ($session['session_identifier'] ?? '') === $identifier
+                || (string) ($session['id'] ?? '') === $identifier
+            ) {
+                return $session;
+            }
+        }
+
+        try {
+            $one = $this->getSessionStatus($identifier);
+            $data = is_array($one['data'] ?? null) ? $one['data'] : $one;
+            if (is_array($data) && (($data['session_identifier'] ?? $data['id'] ?? null) !== null)) {
+                return $data;
+            }
+        } catch (MgwaException) {
+            // الجلسة غير موجودة بعد
+        }
+
+        return null;
+    }
+
+    /**
+     * بدء محرك الجلسة لتوليد رمز الـ QR وربط الجهاز
+     *
+     * POST /api/v1/sessions/{session}/start
+     */
+    public function startSession(string $session): array
+    {
+        return $this->request('POST', "/api/v1/sessions/{$session}/start");
+    }
+
+    /**
+     * التحقق من أن الرقم مسجّل على واتساب عبر الجلسة الحالية
+     *
+     * POST /api/v1/sessions/{session}/check-number
+     */
+    public function checkNumber(string $session, string $phone): array
+    {
+        $to = $this->formatPhoneNumber($phone);
+
+        return $this->request('POST', "/api/v1/sessions/{$session}/check-number", [
+            'to' => $to,
+        ]);
+    }
+
+    /**
      * تنفيذ طلب الـ HTTP ومعالجة الأستجابات واستثناءات الأخطاء
      *
      * @param string $method نوع الطلب (GET, POST, etc.)
@@ -277,5 +509,63 @@ class MgwaClient
         // إزالة الأقواس، المسافات، وعلامة (+)
         $cleaned = preg_replace('/[^\d]/', '', $phone);
         return $cleaned;
+    }
+
+    protected function isQrPending(MgwaException $e): bool
+    {
+        if (in_array($e->getHttpStatusCode() ?? $e->getCode(), [401, 403], true)) {
+            return false;
+        }
+
+        $haystack = strtolower(trim($e->getMessage().' '.json_encode($e->getResponseBody() ?? [], JSON_UNESCAPED_UNICODE)));
+
+        return str_contains($haystack, 'not ready')
+            || str_contains($haystack, 'pending')
+            || str_contains($haystack, 'starting')
+            || str_contains($haystack, 'qr')
+            || str_contains($haystack, 'تجهيز')
+            || str_contains($haystack, 'غير جاهز');
+    }
+
+    protected function isConnectedPayload(?array $payload): bool
+    {
+        if (! is_array($payload) || $payload === []) {
+            return false;
+        }
+
+        $nested = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+        $status = strtoupper((string) (
+            $payload['status']
+            ?? $payload['state']
+            ?? $nested['status']
+            ?? $nested['state']
+            ?? ''
+        ));
+
+        return in_array($status, ['CONNECTED', 'READY', 'AUTHENTICATED', 'PAIRED'], true);
+    }
+
+    protected static function normalizeQrValue(mixed $value): ?string
+    {
+        if (is_array($value)) {
+            $value = $value['base64'] ?? $value['data'] ?? $value['qr'] ?? $value['qr_code'] ?? $value['image'] ?? null;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        if ($value === '' || in_array(strtolower($value), ['null', 'false', 'none'], true)) {
+            return null;
+        }
+
+        if (str_starts_with($value, 'data:image')) {
+            $parts = explode(',', $value, 2);
+
+            return $parts[1] ?? $value;
+        }
+
+        return $value;
     }
 }

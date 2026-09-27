@@ -93,7 +93,12 @@ $client = new MgwaClient(
 | :--- | :--- | :--- |
 | `getSessions()` | `GET /api/v1/sessions` | جلب قائمة كافة جلسات الواتساب الخاصة بالحساب |
 | `getSessionStatus($session)` | `GET /api/v1/sessions/{session}/status` | معرفة حالة الجلسة (متصل، غير متصل، QR جاهز) |
+| `createSession($identifier, $options)` | `POST /api/v1/sessions` | إنشاء جلسة جديدة وبدء المحرك (`start: true`) |
+| `findSession($identifier)` | `GET /api/v1/sessions` | البحث عن جلسة بالمعرّف أو الـ ID |
+| `startSession($session)` | `POST /api/v1/sessions/{session}/start` | بدء محرك الجلسة لتجهيز رمز الـ QR |
 | `getQrCode($session)` | `GET /api/v1/sessions/{session}/qr` | جلب رمز الـ QR Code بصيغة Base64 للمسح |
+| `waitForQr($session)` | status + `/qr` | انتظار ظهور الـ QR بعد حالة `STARTING` |
+| `checkNumber($session, $phone)` | `POST /api/v1/sessions/{session}/check-number` | التحقق من أن الرقم مسجّل على واتساب |
 | `sendMessage($session, $to, $message, $options)` | `POST /api/v1/sessions/{session}/send-message` | إرسال رسالة نصية أو وسائط عبر الجلسة |
 | `sendTextMessage($session, $to, $message, $async)` | `POST /api/v1/sessions/{session}/send-message` | دالة مساعدة لإرسال رسالة نصية مباشرة |
 | `sendMediaMessage($session, $to, $fileUrl, ...)` | `POST /api/v1/sessions/{session}/send-message` | دالة مساعدة لإرسال صورة أو ملف PDF أو فيديو |
