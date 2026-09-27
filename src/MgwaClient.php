@@ -374,7 +374,19 @@ class MgwaClient
             'start' => $options['start'] ?? true,
         ], fn ($value) => $value !== null && $value !== '');
 
-        return $this->request('POST', '/api/v1/sessions', $payload);
+        $last = null;
+        foreach (['/api/v1/sessions/create', '/api/v1/sessions'] as $path) {
+            try {
+                return $this->request('POST', $path, $payload);
+            } catch (MgwaException $e) {
+                if (! $this->isUnsupportedRoute($e)) {
+                    throw $e;
+                }
+                $last = $e;
+            }
+        }
+
+        throw $last ?? new MgwaException('تعذر إنشاء جلسة واتساب على بوابة MGWA');
     }
 
     /**
@@ -422,7 +434,15 @@ class MgwaClient
      */
     public function startSession(string $session): array
     {
-        return $this->request('POST', "/api/v1/sessions/{$session}/start");
+        try {
+            return $this->request('POST', "/api/v1/sessions/{$session}/start");
+        } catch (MgwaException $e) {
+            if (! $this->isUnsupportedRoute($e)) {
+                throw $e;
+            }
+
+            return $this->request('GET', "/api/v1/sessions/{$session}/start");
+        }
     }
 
     /**
@@ -509,6 +529,16 @@ class MgwaClient
         // إزالة الأقواس، المسافات، وعلامة (+)
         $cleaned = preg_replace('/[^\d]/', '', $phone);
         return $cleaned;
+    }
+
+    protected function isUnsupportedRoute(MgwaException $e): bool
+    {
+        $code = $e->getHttpStatusCode() ?? $e->getCode();
+        $message = strtolower($e->getMessage());
+
+        return $code === 405
+            || str_contains($message, 'method is not supported')
+            || str_contains($message, 'supported methods');
     }
 
     protected function isQrPending(MgwaException $e): bool

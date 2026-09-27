@@ -1,6 +1,6 @@
 {
     "name": "mgwa/whatsapp-client",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "description": "حزمة PHP / Laravel متكاملة للربط ببوابة واتساب MGWA لإرسال واستقبال الرسائل وإدارة الجلسات والـ Webhooks",
     "type": "library",
     "keywords": [

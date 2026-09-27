@@ -93,7 +93,7 @@ $client = new MgwaClient(
 | :--- | :--- | :--- |
 | `getSessions()` | `GET /api/v1/sessions` | جلب قائمة كافة جلسات الواتساب الخاصة بالحساب |
 | `getSessionStatus($session)` | `GET /api/v1/sessions/{session}/status` | معرفة حالة الجلسة (متصل، غير متصل، QR جاهز) |
-| `createSession($identifier, $options)` | `POST /api/v1/sessions` | إنشاء جلسة جديدة وبدء المحرك (`start: true`) |
+| `createSession($identifier, $options)` | `POST /api/v1/sessions/create` ثم `/sessions` | إنشاء جلسة جديدة وبدء المحرك (`start: true`) |
 | `findSession($identifier)` | `GET /api/v1/sessions` | البحث عن جلسة بالمعرّف أو الـ ID |
 | `startSession($session)` | `POST /api/v1/sessions/{session}/start` | بدء محرك الجلسة لتجهيز رمز الـ QR |
 | `getQrCode($session)` | `GET /api/v1/sessions/{session}/qr` | جلب رمز الـ QR Code بصيغة Base64 للمسح |
